@@ -127,7 +127,7 @@ func initializeDefaultOptions(opts *AutoscalerOptions, informerFactory informers
 		opts.FrameworkHandle = fwHandle
 	}
 	if opts.ClusterSnapshot == nil {
-		opts.ClusterSnapshot = predicate.NewPredicateSnapshot(store.NewBasicSnapshotStore(), opts.FrameworkHandle, opts.DynamicResourceAllocationEnabled)
+		opts.ClusterSnapshot = predicate.NewPredicateSnapshot(store.NewBasicSnapshotStore(), opts.FrameworkHandle, opts.SchedulingFilteringParallelism, opts.DynamicResourceAllocationEnabled)
 	}
 	if opts.RemainingPdbTracker == nil {
 		opts.RemainingPdbTracker = pdb.NewBasicRemainingPdbTracker()

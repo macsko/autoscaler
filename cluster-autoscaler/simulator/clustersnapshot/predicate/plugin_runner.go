@@ -20,9 +20,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/clustersnapshot"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
+	"k8s.io/client-go/util/workqueue"
 
 	apiv1 "k8s.io/api/core/v1"
 	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
@@ -30,14 +32,93 @@ import (
 
 // SchedulerPluginRunner can be used to run various phases of scheduler plugins through the scheduler framework.
 type SchedulerPluginRunner struct {
-	fwHandle  *framework.Handle
-	snapshot  clustersnapshot.ClusterSnapshot
-	lastIndex int
+	fwHandle    *framework.Handle
+	snapshot    clustersnapshot.ClusterSnapshot
+	lastIndex   int
+	parallelism int
 }
 
 // NewSchedulerPluginRunner builds a SchedulerPluginRunner.
-func NewSchedulerPluginRunner(fwHandle *framework.Handle, snapshot clustersnapshot.ClusterSnapshot) *SchedulerPluginRunner {
-	return &SchedulerPluginRunner{fwHandle: fwHandle, snapshot: snapshot}
+func NewSchedulerPluginRunner(fwHandle *framework.Handle, snapshot clustersnapshot.ClusterSnapshot, parallelism int) *SchedulerPluginRunner {
+	return &SchedulerPluginRunner{fwHandle: fwHandle, snapshot: snapshot, parallelism: parallelism}
+}
+
+func shouldRunFiltersForNode(preFilterResult *schedulerframework.PreFilterResult, nodeMatches func(*framework.NodeInfo) bool, nodeInfo *framework.NodeInfo) bool {
+	// Plugins can filter some Nodes out during the PreFilter phase, if they're sure the Nodes won't work for the Pod at that stage.
+	// Filters are only run for Nodes that haven't been filtered out during the PreFilter phase. Match that behavior here - skip such Nodes.
+	if !preFilterResult.AllNodes() && !preFilterResult.NodeNames.Has(nodeInfo.Node().Name) {
+		return false
+	}
+
+	// Nodes with the Unschedulable bit set will be rejected by one of the plugins during the Filter phase below. We can check that quickly here
+	// and short-circuit to avoid running the expensive Filter phase at all in this case.
+	if nodeInfo.Node().Spec.Unschedulable {
+		return false
+	}
+
+	// Check if the NodeInfo matches the provided filtering condition. This should be less expensive than running the Filter phase below, so
+	// check this first.
+	if !nodeMatches(nodeInfo) {
+		return false
+	}
+
+	return true
+}
+
+func (p *SchedulerPluginRunner) runFiltersUntilPassingNodeSequentially(state *schedulerframework.CycleState, nodeInfosList []*framework.NodeInfo, preFilterResult *schedulerframework.PreFilterResult, pod *apiv1.Pod, nodeMatches func(*framework.NodeInfo) bool) *apiv1.Node {
+	for i := range nodeInfosList {
+		// Determine which NodeInfo to check next.
+		nodeInfo := nodeInfosList[(p.lastIndex+i)%len(nodeInfosList)]
+
+		if !shouldRunFiltersForNode(preFilterResult, nodeMatches, nodeInfo) {
+			continue
+		}
+
+		// Run the Filter phase of the framework. Plugins retrieve the state they saved during PreFilter from CycleState, and answer whether the
+		// given Pod can be scheduled on the given Node.
+		filterStatus := p.fwHandle.Framework.RunFilterPlugins(context.TODO(), state, pod, nodeInfo.ToScheduler())
+		if filterStatus.IsSuccess() {
+			// Filter passed for all plugins, so this pod can be scheduled on this Node.
+			p.lastIndex = (p.lastIndex + i + 1) % len(nodeInfosList)
+			return nodeInfo.Node()
+		}
+		// Filter didn't pass for some plugin, so this Node won't work - move on to the next one.
+	}
+
+	return nil
+}
+
+func (p *SchedulerPluginRunner) runFiltersUntilPassingNodeConcurrently(state *schedulerframework.CycleState, nodeInfosList []*framework.NodeInfo, preFilterResult *schedulerframework.PreFilterResult, pod *apiv1.Pod, nodeMatches func(*framework.NodeInfo) bool) *apiv1.Node {
+	var once sync.Once
+	var selectedNode *apiv1.Node
+
+	ctx := context.Background()
+	ctx, cancel := context.WithCancel(ctx)
+
+	workqueue.ParallelizeUntil(ctx, p.parallelism, len(nodeInfosList), func(nodeIdx int) {
+		// Determine which NodeInfo to check next.
+		nodeInfo := nodeInfosList[(p.lastIndex+nodeIdx)%len(nodeInfosList)]
+
+		if !shouldRunFiltersForNode(preFilterResult, nodeMatches, nodeInfo) {
+			return
+		}
+
+		// Run the Filter phase of the framework. Plugins retrieve the state they saved during PreFilter from CycleState, and answer whether the
+		// given Pod can be scheduled on the given Node.
+		filterStatus := p.fwHandle.Framework.RunFilterPlugins(ctx, state, pod, nodeInfo.ToScheduler())
+		if filterStatus.IsSuccess() {
+			cancel()
+			// Filter passed for all plugins, so this pod can be scheduled on this Node.
+			once.Do(func() {
+				p.lastIndex = (p.lastIndex + nodeIdx + 1) % len(nodeInfosList)
+				selectedNode = nodeInfo.Node()
+			})
+			return
+		}
+		// Filter didn't pass for some plugin, so this Node won't work - move on to the next one.
+	})
+
+	return selectedNode
 }
 
 // RunFiltersUntilPassingNode runs the scheduler framework PreFilter phase once, and then keeps running the Filter phase for all nodes in the cluster that match the provided
@@ -64,38 +145,18 @@ func (p *SchedulerPluginRunner) RunFiltersUntilPassingNode(pod *apiv1.Pod, nodeM
 		return nil, nil, clustersnapshot.NewFailingPredicateError(pod, preFilterStatus.Plugin(), preFilterStatus.Reasons(), "PreFilter failed", "")
 	}
 
-	for i := range nodeInfosList {
-		// Determine which NodeInfo to check next.
-		nodeInfo := nodeInfosList[(p.lastIndex+i)%len(nodeInfosList)]
-
-		// Plugins can filter some Nodes out during the PreFilter phase, if they're sure the Nodes won't work for the Pod at that stage.
-		// Filters are only run for Nodes that haven't been filtered out during the PreFilter phase. Match that behavior here - skip such Nodes.
-		if !preFilterResult.AllNodes() && !preFilterResult.NodeNames.Has(nodeInfo.Node().Name) {
-			continue
+	if p.parallelism > 1 {
+		node := p.runFiltersUntilPassingNodeConcurrently(state, nodeInfosList, preFilterResult, pod, nodeMatches)
+		if node != nil {
+			return node, state, nil
 		}
-
-		// Nodes with the Unschedulable bit set will be rejected by one of the plugins during the Filter phase below. We can check that quickly here
-		// and short-circuit to avoid running the expensive Filter phase at all in this case.
-		if nodeInfo.Node().Spec.Unschedulable {
-			continue
+	} else {
+		node := p.runFiltersUntilPassingNodeSequentially(state, nodeInfosList, preFilterResult, pod, nodeMatches)
+		if node != nil {
+			return node, state, nil
 		}
-
-		// Check if the NodeInfo matches the provided filtering condition. This should be less expensive than running the Filter phase below, so
-		// check this first.
-		if !nodeMatches(nodeInfo) {
-			continue
-		}
-
-		// Run the Filter phase of the framework. Plugins retrieve the state they saved during PreFilter from CycleState, and answer whether the
-		// given Pod can be scheduled on the given Node.
-		filterStatus := p.fwHandle.Framework.RunFilterPlugins(context.TODO(), state, pod, nodeInfo.ToScheduler())
-		if filterStatus.IsSuccess() {
-			// Filter passed for all plugins, so this pod can be scheduled on this Node.
-			p.lastIndex = (p.lastIndex + i + 1) % len(nodeInfosList)
-			return nodeInfo.Node(), state, nil
-		}
-		// Filter didn't pass for some plugin, so this Node won't work - move on to the next one.
 	}
+
 	return nil, nil, clustersnapshot.NewNoNodesPassingPredicatesFoundError(pod)
 }
 

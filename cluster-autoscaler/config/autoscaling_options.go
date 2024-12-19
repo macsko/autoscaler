@@ -311,6 +311,8 @@ type AutoscalingOptions struct {
 	ForceDeleteLongUnregisteredNodes bool
 	// DynamicResourceAllocationEnabled configures whether logic for handling DRA objects is enabled.
 	DynamicResourceAllocationEnabled bool
+	// SchedulingFilteringParallelism is the maximum parallelism of filter phase in scheduling simulation.
+	SchedulingFilteringParallelism int
 }
 
 // KubeClientOptions specify options for kube client

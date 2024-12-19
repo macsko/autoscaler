@@ -283,6 +283,7 @@ var (
 	checkCapacityProvisioningRequestBatchTimebox = flag.Duration("check-capacity-provisioning-request-batch-timebox", 10*time.Second, "Maximum time to process a batch of provisioning requests.")
 	forceDeleteLongUnregisteredNodes             = flag.Bool("force-delete-unregistered-nodes", false, "Whether to enable force deletion of long unregistered nodes, regardless of the min size of the node group the belong to.")
 	enableDynamicResourceAllocation              = flag.Bool("enable-dynamic-resource-allocation", false, "Whether logic for handling DRA (Dynamic Resource Allocation) objects is enabled.")
+	schedulingFilteringParallelism               = flag.Int("scheduling-filtering-parallelism", 8, "Maximum parallelism of filter phase in scheduling simulation.")
 )
 
 func isFlagPassed(name string) bool {
@@ -463,6 +464,7 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 		CheckCapacityProvisioningRequestBatchTimebox: *checkCapacityProvisioningRequestBatchTimebox,
 		ForceDeleteLongUnregisteredNodes:             *forceDeleteLongUnregisteredNodes,
 		DynamicResourceAllocationEnabled:             *enableDynamicResourceAllocation,
+		SchedulingFilteringParallelism:               *schedulingFilteringParallelism,
 	}
 }
 
@@ -515,7 +517,7 @@ func buildAutoscaler(context ctx.Context, debuggingSnapshotter debuggingsnapshot
 	opts := core.AutoscalerOptions{
 		AutoscalingOptions:   autoscalingOptions,
 		FrameworkHandle:      fwHandle,
-		ClusterSnapshot:      predicate.NewPredicateSnapshot(snapshotStore, fwHandle, autoscalingOptions.DynamicResourceAllocationEnabled),
+		ClusterSnapshot:      predicate.NewPredicateSnapshot(snapshotStore, fwHandle, autoscalingOptions.SchedulingFilteringParallelism, autoscalingOptions.DynamicResourceAllocationEnabled),
 		KubeClient:           kubeClient,
 		InformerFactory:      informerFactory,
 		DebuggingSnapshotter: debuggingSnapshotter,

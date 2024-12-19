@@ -332,6 +332,6 @@ func newTestPluginRunnerAndSnapshot(schedConfig *config.KubeSchedulerConfigurati
 	if err != nil {
 		return nil, nil, err
 	}
-	snapshot := NewPredicateSnapshot(store.NewBasicSnapshotStore(), fwHandle, true)
-	return NewSchedulerPluginRunner(fwHandle, snapshot), snapshot, nil
+	snapshot := NewPredicateSnapshot(store.NewBasicSnapshotStore(), fwHandle, 8, true)
+	return snapshot.pluginRunner, snapshot, nil
 }
