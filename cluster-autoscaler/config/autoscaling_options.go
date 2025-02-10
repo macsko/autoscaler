@@ -313,10 +313,11 @@ type AutoscalingOptions struct {
 	DynamicResourceAllocationEnabled bool
 	// ClusterSnapshotParallelism is the maximum parallelism of cluster snapshot creation.
 	ClusterSnapshotParallelism int
-	// CheckCapacityProvisioningClassPrefix is the prefix of provisioningClassName that will be filtered by processors.
-	// Only ProvisioningRequests with this prefix in their class will be processed by this CA.
+	// CheckCapacityProvisioningClassProcessorInstance is the name of the processor instance.
+	// Only ProvisioningRequests that define this name in their parameters with the key "processorInstance" will be processed by this CA instance.
 	// It only refers to check capacity ProvisioningRequests.
-	CheckCapacityProvisioningClassPrefix string
+	// Not recommended: Until CA 1.35, ProvisioningRequests with this name as prefix in their class will be also processed.
+	CheckCapacityProvisioningClassProcessorInstance string
 }
 
 // KubeClientOptions specify options for kube client

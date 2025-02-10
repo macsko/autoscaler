@@ -26,11 +26,12 @@ import (
 
 func TestBookCapacity(t *testing.T) {
 	tests := []struct {
-		name                                 string
-		provisioningClassName                string
-		prConditions                         []metav1.Condition
-		checkCapacityProvisioningClassPrefix string
-		want                                 bool
+		name                                            string
+		provisioningClassName                           string
+		prConditions                                    []metav1.Condition
+		prParameters                                    map[string]*v1.Parameter
+		checkCapacityProvisioningClassProcessorInstance string
+		want                                            bool
 	}{
 		{
 			name:                  "BookingExpired check capacity",
@@ -133,7 +134,7 @@ func TestBookCapacity(t *testing.T) {
 			want: true,
 		},
 		{
-			name:                  "Capacity found and provisioned check capacity but prefix not matching",
+			name:                  "Capacity found and provisioned check capacity but processor instance not matching",
 			provisioningClassName: v1.ProvisioningClassCheckCapacity,
 			prConditions: []metav1.Condition{
 				{
@@ -145,11 +146,11 @@ func TestBookCapacity(t *testing.T) {
 					Status: metav1.ConditionTrue,
 				},
 			},
-			checkCapacityProvisioningClassPrefix: "test-",
-			want:                                 false,
+			checkCapacityProvisioningClassProcessorInstance: "test",
+			want: false,
 		},
 		{
-			name:                  "Capacity found and provisioned best effort atomic and prefix is ignored",
+			name:                  "Capacity found and provisioned best effort atomic and processor instance is ignored",
 			provisioningClassName: v1.ProvisioningClassBestEffortAtomicScaleUp,
 			prConditions: []metav1.Condition{
 				{
@@ -161,8 +162,8 @@ func TestBookCapacity(t *testing.T) {
 					Status: metav1.ConditionTrue,
 				},
 			},
-			checkCapacityProvisioningClassPrefix: "test-",
-			want:                                 true,
+			checkCapacityProvisioningClassProcessorInstance: "test",
+			want: true,
 		},
 		{
 			name:                  "Capacity is not found for check capacity",
@@ -198,7 +199,7 @@ func TestBookCapacity(t *testing.T) {
 						Conditions: test.prConditions,
 					},
 				}, nil)
-			got := ShouldCapacityBeBooked(pr, test.checkCapacityProvisioningClassPrefix)
+			got := ShouldCapacityBeBooked(pr, test.checkCapacityProvisioningClassProcessorInstance)
 			if got != test.want {
 				t.Errorf("Want: %v, got: %v", test.want, got)
 			}
